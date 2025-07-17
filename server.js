@@ -53,40 +53,56 @@ class SimpleMCPServer {
 
     // SSE endpoint - this is what kagent connects to
     this.app.get('/sse', (req, res) => {
-      console.log('SSE connection established');
+      console.log('SSE connection established from:', req.ip);
       
-      // Set SSE headers
+      // Set SSE headers exactly as kagent expects
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-transform',
         'Connection': 'keep-alive',
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Cache-Control'
+        'Access-Control-Allow-Headers': 'Cache-Control',
+        'X-Accel-Buffering': 'no'
       });
 
-      // Send initial connection message
-      res.write('data: ' + JSON.stringify({
+      // Send initial connection message (MCP protocol)
+      const initMessage = {
         jsonrpc: '2.0',
         method: 'notifications/initialized',
         params: {}
-      }) + '\n\n');
+      };
+      console.log('Sending init message:', JSON.stringify(initMessage));
+      res.write(`data: ${JSON.stringify(initMessage)}\n\n`);
 
-      // Send tools list
+      // Send tools list immediately (MCP protocol)
       const tools = this.getTools();
-      res.write('data: ' + JSON.stringify({
+      const toolsMessage = {
         jsonrpc: '2.0',
         method: 'tools/list',
         params: { tools }
-      }) + '\n\n');
+      };
+      console.log('Sending tools message:', JSON.stringify(toolsMessage));
+      res.write(`data: ${JSON.stringify(toolsMessage)}\n\n`);
 
-      // Keep connection alive
+      // Flush the response to ensure it's sent
+      res.flush();
+
+      // Keep connection alive with comments (SSE spec)
       const keepAlive = setInterval(() => {
         res.write(': keep-alive\n\n');
-      }, 15000);
+        res.flush();
+      }, 30000);
 
       // Handle client disconnect
       req.on('close', () => {
         console.log('SSE connection closed');
+        clearInterval(keepAlive);
+        res.end();
+      });
+
+      // Handle errors
+      req.on('error', (error) => {
+        console.error('SSE request error:', error);
         clearInterval(keepAlive);
         res.end();
       });
@@ -95,11 +111,25 @@ class SimpleMCPServer {
     // POST endpoint for tool calls
     this.app.post('/sse', async (req, res) => {
       try {
+        console.log('Tool call request:', JSON.stringify(req.body));
         const result = await this.handleToolCall(req.body);
+        console.log('Tool call result:', JSON.stringify(result));
         res.json(result);
       } catch (error) {
+        console.error('Tool call error:', error);
         res.status(500).json({ error: error.message });
       }
+    });
+
+    // Test endpoint to verify tools are available
+    this.app.get('/test', (req, res) => {
+      const tools = this.getTools();
+      res.json({
+        message: 'Simple MCP Server is running!',
+        tools: tools.map(t => t.name),
+        total_tools: tools.length,
+        timestamp: new Date().toISOString()
+      });
     });
   }
 
